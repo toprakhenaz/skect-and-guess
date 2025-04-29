@@ -8,8 +8,20 @@ import { Input } from "@/components/ui/input"
 import { CanvasDraw } from "@/components/canvas-draw"
 import { ArrowLeft, Clock, Send, Users, Loader2 } from "lucide-react"
 import Link from "next/link"
-import { getSocket, disconnectSocket } from "@/lib/socket"
 import { useToast } from "@/components/ui/use-toast"
+import { supabase } from "@/lib/supabase"
+import {
+  joinRoom,
+  leaveRoom,
+  subscribeToDrawing,
+  sendDrawingUpdate,
+  subscribeToChat,
+  sendMessage,
+  subscribeToGameState,
+  subscribeToPlayerChanges,
+  cleanupChannels,
+} from "@/lib/realtime"
+import type { RealtimeChannel } from "@supabase/supabase-js"
 
 // Oyun durumları
 type GameState = "waiting" | "playing" | "guessing" | "roundEnd" | "gameEnd"
@@ -30,6 +42,7 @@ type Message = {
   playerName: string
   message: string
   isCorrectGuess: boolean
+  timestamp: string
 }
 
 export default function RoomPage() {
@@ -55,96 +68,155 @@ export default function RoomPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [isDrawing, setIsDrawing] = useState(false)
 
-  const socket = useRef(getSocket())
+  const roomChannelRef = useRef<RealtimeChannel | null>(null)
   const timerRef = useRef<NodeJS.Timeout | null>(null)
 
   // Odaya katıl
   useEffect(() => {
-    // Mevcut oyuncuyu ekle
-    const currentPlayer = {
-      player_id: playerId,
-      player_name: playerName,
-      is_host: isHost,
-      is_drawing: false,
-      score: 0,
-      connected: true,
-    }
-
-    setPlayers([currentPlayer])
-
-    // Socket.io bağlantısı
-    const s = socket.current
-
-    // Odaya katıl
-    s.emit("join-room", { roomCode: roomId, playerId, playerName })
-
-    // Oyuncu katıldı olayını dinle
-    s.on("player-joined", ({ playerId: newPlayerId, playerName: newPlayerName }) => {
-      toast({
-        title: "Yeni Oyuncu",
-        description: `${newPlayerName} odaya katıldı!`,
-      })
-
-      // Oyuncuları güncelle
-      setPlayers((prev) => [
-        ...prev,
-        {
-          player_id: newPlayerId,
-          player_name: newPlayerName,
-          is_host: false,
+    const initializeRoom = async () => {
+      try {
+        // Mevcut oyuncuyu ekle
+        const currentPlayer = {
+          player_id: playerId,
+          player_name: playerName,
+          is_host: isHost,
           is_drawing: false,
           score: 0,
           connected: true,
-        },
-      ])
-    })
+        }
 
-    // Oda güncellemesi dinle
-    s.on("room-update", (data) => {
-      console.log("Oda güncellemesi:", data)
-      setIsLoading(false)
-    })
+        setPlayers([currentPlayer])
 
-    // Oyuncu ayrıldı olayını dinle
-    s.on("player-left", ({ playerId: leftPlayerId }) => {
-      setPlayers((prev) => prev.map((p) => (p.player_id === leftPlayerId ? { ...p, connected: false } : p)))
-    })
+        // Odaya katıl ve presence durumunu ayarla
+        roomChannelRef.current = joinRoom(roomId, playerId, playerName, isHost)
 
-    // Oyun başladı olayını dinle
-    s.on("game-started", ({ currentRound, totalRounds, word }) => {
-      setGameState(isHost ? "playing" : "guessing")
-      setRoundNumber(currentRound)
-      setTotalRounds(totalRounds)
-      setTimeLeft(60)
-      setIsDrawing(isHost) // İlk turda host çizer
+        // Çizim güncellemelerini dinle
+        subscribeToDrawing(roomId, (drawingData) => {
+          setCurrentDrawing(drawingData)
+        })
 
-      if (isHost) {
-        setCurrentWord(word)
+        // Sohbet mesajlarını dinle
+        subscribeToChat(roomId, (newMessage) => {
+          setMessages((prev) => [
+            ...prev,
+            {
+              playerId: newMessage.playerId,
+              playerName: newMessage.playerName,
+              message: newMessage.message,
+              isCorrectGuess: newMessage.isCorrectGuess || false,
+              timestamp: newMessage.timestamp,
+            },
+          ])
+        })
+
+        // Oyun durumu değişikliklerini dinle
+        subscribeToGameState(roomId, (roomData) => {
+          if (roomData.status === "playing") {
+            setGameState(isDrawing ? "playing" : "guessing")
+            setRoundNumber(roomData.current_round)
+            setTotalRounds(roomData.total_rounds)
+
+            // Çizen oyuncu için kelimeyi ayarla
+            if (isDrawing && roomData.current_word) {
+              setCurrentWord(roomData.current_word)
+            }
+          } else if (roomData.status === "finished") {
+            setGameState("gameEnd")
+          }
+        })
+
+        // Oyuncu değişikliklerini dinle
+        subscribeToPlayerChanges(roomId, (updatedPlayers) => {
+          setPlayers(updatedPlayers)
+
+          // Çizen oyuncuyu kontrol et
+          const drawingPlayer = updatedPlayers.find((p) => p.is_drawing)
+          if (drawingPlayer) {
+            setIsDrawing(drawingPlayer.player_id === playerId)
+          }
+        })
+
+        // Odadaki mevcut oyuncuları getir
+        const { data: roomPlayers } = await supabase
+          .from("players")
+          .select("*")
+          .eq("room_code", roomId)
+          .order("created_at", { ascending: true })
+
+        if (roomPlayers) {
+          setPlayers(roomPlayers)
+        }
+
+        // Oda bilgilerini getir
+        const { data: roomDetails } = await supabase.from("rooms").select("*").eq("room_code", roomId).single()
+
+        if (roomDetails) {
+          if (roomDetails.status === "playing") {
+            // Çizen oyuncuyu kontrol et
+            const drawingPlayer = roomPlayers?.find((p) => p.is_drawing)
+            setIsDrawing(drawingPlayer?.player_id === playerId)
+
+            setGameState(drawingPlayer?.player_id === playerId ? "playing" : "guessing")
+            setRoundNumber(roomDetails.current_round)
+            setTotalRounds(roomDetails.total_rounds)
+
+            if (drawingPlayer?.player_id === playerId && roomDetails.current_word) {
+              setCurrentWord(roomDetails.current_word)
+            }
+          }
+        }
+
+        // Mevcut mesajları getir
+        const { data: roomMessages } = await supabase
+          .from("messages")
+          .select("*")
+          .eq("room_code", roomId)
+          .order("created_at", { ascending: true })
+          .limit(50)
+
+        if (roomMessages) {
+          setMessages(
+            roomMessages.map((msg) => ({
+              playerId: msg.player_id,
+              playerName: msg.player_name,
+              message: msg.message,
+              isCorrectGuess: msg.is_correct_guess,
+              timestamp: msg.created_at,
+            })),
+          )
+        }
+
+        // Son çizimi getir
+        const { data: latestDrawing } = await supabase
+          .from("drawings")
+          .select("*")
+          .eq("room_code", roomId)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .single()
+
+        if (latestDrawing) {
+          setCurrentDrawing(latestDrawing.drawing_data)
+        }
+
+        setIsLoading(false)
+      } catch (error) {
+        console.error("Oda başlatma hatası:", error)
+        toast({
+          title: "Hata",
+          description: "Oda yüklenirken bir hata oluştu. Lütfen tekrar deneyin.",
+          variant: "destructive",
+        })
+        router.push("/multiplayer")
       }
-    })
+    }
 
-    // Çizim güncelleme olayını dinle
-    s.on("drawing-update", ({ drawingData }) => {
-      setCurrentDrawing(drawingData)
-    })
-
-    // Yeni mesaj olayını dinle
-    s.on("new-message", (newMessage) => {
-      setMessages((prev) => [...prev, newMessage])
-    })
-
-    setIsLoading(false)
+    initializeRoom()
 
     // Temizlik
     return () => {
-      const s = socket.current
-      s.emit("leave-room", { roomCode: roomId, playerId })
-      s.off("player-joined")
-      s.off("room-update")
-      s.off("player-left")
-      s.off("game-started")
-      s.off("drawing-update")
-      s.off("new-message")
+      leaveRoom(roomId)
+      cleanupChannels()
 
       if (timerRef.current) {
         clearInterval(timerRef.current)
@@ -166,6 +238,12 @@ export default function RoomPage() {
       setTimeLeft((prev) => {
         if (prev <= 1) {
           clearInterval(timerRef.current as NodeJS.Timeout)
+
+          // Süre dolduğunda çizim tamamlandı olayını tetikle
+          if (gameState === "playing" && currentDrawing) {
+            handleDrawingComplete()
+          }
+
           setGameState("roundEnd")
           return 0
         }
@@ -178,27 +256,141 @@ export default function RoomPage() {
         clearInterval(timerRef.current)
       }
     }
-  }, [gameState])
+  }, [gameState, currentDrawing])
 
   // Oyunu başlat
-  const startGame = () => {
+  const startGame = async () => {
     if (!isHost) return
 
-    socket.current.emit("start-game", { roomCode: roomId, rounds: totalRounds })
+    try {
+      // Rastgele bir kelime seç
+      const words = [
+        "elma",
+        "araba",
+        "ev",
+        "ağaç",
+        "güneş",
+        "ay",
+        "yıldız",
+        "kitap",
+        "kalem",
+        "masa",
+        "sandalye",
+        "kapı",
+        "pencere",
+        "telefon",
+        "bilgisayar",
+        "kuş",
+        "kedi",
+        "köpek",
+        "balık",
+        "çiçek",
+      ]
+      const randomWord = words[Math.floor(Math.random() * words.length)]
+
+      // Rastgele bir oyuncu seç
+      const randomPlayerIndex = Math.floor(Math.random() * players.length)
+      const drawingPlayer = players[randomPlayerIndex]
+
+      // Çizen oyuncuyu güncelle
+      await supabase.from("players").update({ is_drawing: false }).eq("room_code", roomId)
+
+      await supabase
+        .from("players")
+        .update({ is_drawing: true })
+        .eq("room_code", roomId)
+        .eq("player_id", drawingPlayer.player_id)
+
+      // Oda durumunu güncelle
+      await supabase
+        .from("rooms")
+        .update({
+          status: "playing",
+          current_word: randomWord,
+          current_round: 1,
+          total_rounds: totalRounds,
+        })
+        .eq("room_code", roomId)
+
+      // Kendi durumumuzu güncelle
+      setGameState(drawingPlayer.player_id === playerId ? "playing" : "guessing")
+      setRoundNumber(1)
+      setTimeLeft(60)
+      setIsDrawing(drawingPlayer.player_id === playerId)
+
+      if (drawingPlayer.player_id === playerId) {
+        setCurrentWord(randomWord)
+      }
+    } catch (error) {
+      console.error("Oyun başlatma hatası:", error)
+      toast({
+        title: "Hata",
+        description: "Oyun başlatılırken bir hata oluştu. Lütfen tekrar deneyin.",
+        variant: "destructive",
+      })
+    }
   }
 
   // Mesaj gönder
-  const sendMessage = () => {
+  const handleSendMessage = async () => {
     if (!message.trim()) return
 
-    socket.current.emit("send-message", {
-      roomCode: roomId,
-      playerId,
-      playerName,
-      message,
-    })
+    try {
+      // Mesajı veritabanına kaydet
+      await supabase.from("messages").insert({
+        room_code: roomId,
+        player_id: playerId,
+        player_name: playerName,
+        message: message,
+        is_correct_guess: false,
+      })
 
-    setMessage("")
+      // Realtime ile mesajı gönder
+      sendMessage(roomId, playerId, playerName, message)
+
+      // Mesaj kutusunu temizle
+      setMessage("")
+
+      // Doğru tahmin kontrolü
+      if (
+        gameState === "guessing" &&
+        currentWord &&
+        message.toLowerCase().trim() === currentWord.toLowerCase().trim()
+      ) {
+        // Doğru tahmin
+        await supabase.from("messages").insert({
+          room_code: roomId,
+          player_id: playerId,
+          player_name: playerName,
+          message: "*** DOĞRU TAHMİN ***",
+          is_correct_guess: true,
+        })
+
+        // Tahmin eden oyuncuya puan ekle
+        await supabase
+          .from("players")
+          .update({ score: players.find((p) => p.player_id === playerId)?.score + 10 || 10 })
+          .eq("room_code", roomId)
+          .eq("player_id", playerId)
+
+        // Çizen oyuncuya puan ekle
+        const drawingPlayer = players.find((p) => p.is_drawing)
+        if (drawingPlayer) {
+          await supabase
+            .from("players")
+            .update({ score: drawingPlayer.score + 5 })
+            .eq("room_code", roomId)
+            .eq("player_id", drawingPlayer.player_id)
+        }
+
+        // Tur sonu işlemleri
+        setTimeout(() => {
+          handleRoundEnd()
+        }, 5000)
+      }
+    } catch (error) {
+      console.error("Mesaj gönderme hatası:", error)
+    }
   }
 
   // Çizimi kaydet
@@ -206,18 +398,130 @@ export default function RoomPage() {
     setCurrentDrawing(dataUrl)
 
     // Çizimi diğer oyunculara gönder
-    socket.current.emit("drawing-update", {
-      roomCode: roomId,
-      drawingData: dataUrl,
-      playerId,
-    })
+    sendDrawingUpdate(roomId, dataUrl)
+  }
+
+  // Çizimi tamamla
+  const handleDrawingComplete = async () => {
+    if (!currentDrawing) return
+
+    try {
+      // Çizimi veritabanına kaydet
+      await supabase.from("drawings").insert({
+        room_code: roomId,
+        player_id: playerId,
+        drawing_data: currentDrawing,
+        word: currentWord,
+      })
+
+      // Tur sonu işlemleri
+      handleRoundEnd()
+    } catch (error) {
+      console.error("Çizim kaydetme hatası:", error)
+    }
+  }
+
+  // Tur sonu işlemleri
+  const handleRoundEnd = async () => {
+    try {
+      // Oda bilgilerini getir
+      const { data: roomDetails } = await supabase
+        .from("rooms")
+        .select("current_round, total_rounds")
+        .eq("room_code", roomId)
+        .single()
+
+      if (!roomDetails) return
+
+      const { current_round, total_rounds } = roomDetails
+
+      if (current_round >= total_rounds) {
+        // Oyun bitti
+        await supabase.from("rooms").update({ status: "finished" }).eq("room_code", roomId)
+
+        setGameState("gameEnd")
+      } else {
+        // Sonraki tur
+        // Yeni çizen oyuncuyu belirle
+        const currentDrawingIndex = players.findIndex((p) => p.is_drawing)
+        const nextDrawingIndex = (currentDrawingIndex + 1) % players.length
+        const nextDrawingPlayer = players[nextDrawingIndex]
+
+        // Çizen oyuncuyu güncelle
+        await supabase.from("players").update({ is_drawing: false }).eq("room_code", roomId)
+
+        await supabase
+          .from("players")
+          .update({ is_drawing: true })
+          .eq("room_code", roomId)
+          .eq("player_id", nextDrawingPlayer.player_id)
+
+        // Yeni kelime seç
+        const words = [
+          "elma",
+          "araba",
+          "ev",
+          "ağaç",
+          "güneş",
+          "ay",
+          "yıldız",
+          "kitap",
+          "kalem",
+          "masa",
+          "sandalye",
+          "kapı",
+          "pencere",
+          "telefon",
+          "bilgisayar",
+          "kuş",
+          "kedi",
+          "köpek",
+          "balık",
+          "çiçek",
+        ]
+        const randomWord = words[Math.floor(Math.random() * words.length)]
+
+        // Oda bilgilerini güncelle
+        await supabase
+          .from("rooms")
+          .update({
+            current_word: randomWord,
+            current_round: current_round + 1,
+          })
+          .eq("room_code", roomId)
+
+        // Kendi durumumuzu güncelle
+        setGameState(nextDrawingPlayer.player_id === playerId ? "playing" : "guessing")
+        setRoundNumber(current_round + 1)
+        setTimeLeft(60)
+        setCurrentDrawing(null)
+        setIsDrawing(nextDrawingPlayer.player_id === playerId)
+
+        if (nextDrawingPlayer.player_id === playerId) {
+          setCurrentWord(randomWord)
+        }
+      }
+    } catch (error) {
+      console.error("Tur sonu işleme hatası:", error)
+    }
   }
 
   // Oyundan çık
-  const leaveGame = () => {
-    socket.current.emit("leave-room", { roomCode: roomId, playerId })
-    disconnectSocket()
-    router.push("/multiplayer")
+  const leaveGame = async () => {
+    try {
+      // Oyuncunun bağlantı durumunu güncelle
+      await supabase.from("players").update({ connected: false }).eq("room_code", roomId).eq("player_id", playerId)
+
+      // Realtime kanallarından ayrıl
+      leaveRoom(roomId)
+      cleanupChannels()
+
+      // Ana sayfaya yönlendir
+      router.push("/multiplayer")
+    } catch (error) {
+      console.error("Oyundan çıkış hatası:", error)
+      router.push("/multiplayer")
+    }
   }
 
   // Oyun durumuna göre içerik
@@ -277,6 +581,12 @@ export default function RoomPage() {
                       Çizilecek kelime: <span className="font-bold">{currentWord}</span>
                     </div>
                     <CanvasDraw onSave={saveDrawing} />
+
+                    <div className="p-2 text-center">
+                      <Button onClick={handleDrawingComplete} disabled={!currentDrawing}>
+                        Çizimi Tamamla
+                      </Button>
+                    </div>
                   </>
                 ) : (
                   <>
@@ -324,10 +634,10 @@ export default function RoomPage() {
                       placeholder="Tahmininizi yazın..."
                       value={message}
                       onChange={(e) => setMessage(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && sendMessage()}
+                      onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
                       disabled={isDrawing || gameState !== "guessing"}
                     />
-                    <Button size="icon" onClick={sendMessage} disabled={isDrawing || gameState !== "guessing"}>
+                    <Button size="icon" onClick={handleSendMessage} disabled={isDrawing || gameState !== "guessing"}>
                       <Send className="h-4 w-4" />
                       <span className="sr-only">Gönder</span>
                     </Button>
@@ -392,7 +702,7 @@ export default function RoomPage() {
                 ))}
             </div>
 
-            <Button onClick={leaveGame}>Çıkış</Button>
+            <p className="text-sm text-muted-foreground">Sonraki tur başlatılıyor...</p>
           </div>
         )
 
