@@ -781,92 +781,128 @@ export default function RoomPage() {
 
             <div className="flex flex-col">
               <Card className="flex-1">
-                <CardHeader className="p-4">
-                  {!isDrawing && currentDrawing && (
-                    <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as "chat" | "guess")}>
+                {!isDrawing && currentDrawing ? (
+                  <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as "chat" | "guess")}>
+                    <CardHeader className="p-4">
                       <TabsList className="grid w-full grid-cols-2">
                         <TabsTrigger value="chat">Sohbet</TabsTrigger>
                         <TabsTrigger value="guess">Tahmin Et</TabsTrigger>
                       </TabsList>
-                    </Tabs>
-                  )}
-                  {(isDrawing || !currentDrawing) && <CardTitle className="text-lg">Sohbet</CardTitle>}
-                </CardHeader>
+                    </CardHeader>
 
-                <TabsContent value="chat" className="flex-1 flex flex-col">
-                  <CardContent className="h-[300px] overflow-y-auto p-4">
-                    <div className="space-y-2">
-                      {messages.map((msg, index) => (
-                        <div
-                          key={index}
-                          className={`rounded-lg p-2 ${
-                            msg.isCorrectGuess ? "bg-green-100 dark:bg-green-900" : "bg-muted"
-                          }`}
-                        >
-                          <div className="font-medium">{msg.playerName}</div>
-                          <div>{msg.message}</div>
+                    <TabsContent value="chat" className="flex-1 flex flex-col">
+                      <CardContent className="h-[300px] overflow-y-auto p-4">
+                        <div className="space-y-2">
+                          {messages.map((msg, index) => (
+                            <div
+                              key={index}
+                              className={`rounded-lg p-2 ${
+                                msg.isCorrectGuess ? "bg-green-100 dark:bg-green-900" : "bg-muted"
+                              }`}
+                            >
+                              <div className="font-medium">{msg.playerName}</div>
+                              <div>{msg.message}</div>
+                            </div>
+                          ))}
+                          {messages.length === 0 && <p className="text-sm text-muted-foreground">Henüz mesaj yok</p>}
+                          <div ref={messagesEndRef} />
                         </div>
-                      ))}
-                      {messages.length === 0 && <p className="text-sm text-muted-foreground">Henüz mesaj yok</p>}
-                      <div ref={messagesEndRef} />
-                    </div>
-                  </CardContent>
-                  <CardFooter className="p-4">
-                    <div className="flex w-full items-center space-x-2">
-                      <Input
-                        placeholder="Mesaj yazın..."
-                        value={message}
-                        onChange={(e) => setMessage(e.target.value)}
-                        onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
-                      />
-                      <Button size="icon" onClick={handleSendMessage}>
-                        <Send className="h-4 w-4" />
-                        <span className="sr-only">Gönder</span>
-                      </Button>
-                    </div>
-                  </CardFooter>
-                </TabsContent>
+                      </CardContent>
+                      <CardFooter className="p-4">
+                        <div className="flex w-full items-center space-x-2">
+                          <Input
+                            placeholder="Mesaj yazın..."
+                            value={message}
+                            onChange={(e) => setMessage(e.target.value)}
+                            onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
+                          />
+                          <Button size="icon" onClick={handleSendMessage}>
+                            <Send className="h-4 w-4" />
+                            <span className="sr-only">Gönder</span>
+                          </Button>
+                        </div>
+                      </CardFooter>
+                    </TabsContent>
 
-                <TabsContent value="guess" className="flex-1 flex flex-col">
-                  <CardContent className="h-[300px] overflow-y-auto p-4">
-                    <div className="space-y-2">
-                      {guesses.length > 0 ? (
-                        guesses.map((guess, index) => (
+                    <TabsContent value="guess" className="flex-1 flex flex-col">
+                      <CardContent className="h-[300px] overflow-y-auto p-4">
+                        <div className="space-y-2">
+                          {guesses.length > 0 ? (
+                            guesses.map((guess, index) => (
+                              <div
+                                key={index}
+                                className={`rounded-lg p-2 ${
+                                  guess.isCorrect ? "bg-green-100 dark:bg-green-900" : "bg-muted"
+                                }`}
+                              >
+                                <div className="font-medium">{guess.playerName}</div>
+                                <div>{guess.guess || "Boş tahmin"}</div>
+                              </div>
+                            ))
+                          ) : (
+                            <p className="text-sm text-muted-foreground">Henüz tahmin yapılmadı</p>
+                          )}
+                        </div>
+                      </CardContent>
+                      <CardFooter className="p-4">
+                        <div className="flex w-full items-center space-x-2">
+                          <Input
+                            placeholder="Tahmininizi yazın..."
+                            value={guess}
+                            onChange={(e) => setGuess(e.target.value)}
+                            onKeyDown={(e) => e.key === "Enter" && !hasGuessed && handleSubmitGuess()}
+                            disabled={hasGuessed || guessTimeLeft <= 0}
+                          />
+                          <Button size="icon" onClick={handleSubmitGuess} disabled={hasGuessed || guessTimeLeft <= 0}>
+                            <Send className="h-4 w-4" />
+                            <span className="sr-only">Tahmin Gönder</span>
+                          </Button>
+                        </div>
+                        {hasGuessed && <p className="mt-2 text-sm text-muted-foreground">Tahmininiz gönderildi.</p>}
+                        {guessTimeLeft <= 0 && !hasGuessed && (
+                          <p className="mt-2 text-sm text-muted-foreground">Tahmin süresi doldu.</p>
+                        )}
+                      </CardFooter>
+                    </TabsContent>
+                  </Tabs>
+                ) : (
+                  <>
+                    <CardHeader className="p-4">
+                      <CardTitle className="text-lg">Sohbet</CardTitle>
+                    </CardHeader>
+                    <CardContent className="h-[300px] overflow-y-auto p-4">
+                      <div className="space-y-2">
+                        {messages.map((msg, index) => (
                           <div
                             key={index}
                             className={`rounded-lg p-2 ${
-                              guess.isCorrect ? "bg-green-100 dark:bg-green-900" : "bg-muted"
+                              msg.isCorrectGuess ? "bg-green-100 dark:bg-green-900" : "bg-muted"
                             }`}
                           >
-                            <div className="font-medium">{guess.playerName}</div>
-                            <div>{guess.guess || "Boş tahmin"}</div>
+                            <div className="font-medium">{msg.playerName}</div>
+                            <div>{msg.message}</div>
                           </div>
-                        ))
-                      ) : (
-                        <p className="text-sm text-muted-foreground">Henüz tahmin yapılmadı</p>
-                      )}
-                    </div>
-                  </CardContent>
-                  <CardFooter className="p-4">
-                    <div className="flex w-full items-center space-x-2">
-                      <Input
-                        placeholder="Tahmininizi yazın..."
-                        value={guess}
-                        onChange={(e) => setGuess(e.target.value)}
-                        onKeyDown={(e) => e.key === "Enter" && !hasGuessed && handleSubmitGuess()}
-                        disabled={hasGuessed || guessTimeLeft <= 0}
-                      />
-                      <Button size="icon" onClick={handleSubmitGuess} disabled={hasGuessed || guessTimeLeft <= 0}>
-                        <Send className="h-4 w-4" />
-                        <span className="sr-only">Tahmin Gönder</span>
-                      </Button>
-                    </div>
-                    {hasGuessed && <p className="mt-2 text-sm text-muted-foreground">Tahmininiz gönderildi.</p>}
-                    {guessTimeLeft <= 0 && !hasGuessed && (
-                      <p className="mt-2 text-sm text-muted-foreground">Tahmin süresi doldu.</p>
-                    )}
-                  </CardFooter>
-                </TabsContent>
+                        ))}
+                        {messages.length === 0 && <p className="text-sm text-muted-foreground">Henüz mesaj yok</p>}
+                        <div ref={messagesEndRef} />
+                      </div>
+                    </CardContent>
+                    <CardFooter className="p-4">
+                      <div className="flex w-full items-center space-x-2">
+                        <Input
+                          placeholder="Mesaj yazın..."
+                          value={message}
+                          onChange={(e) => setMessage(e.target.value)}
+                          onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
+                        />
+                        <Button size="icon" onClick={handleSendMessage}>
+                          <Send className="h-4 w-4" />
+                          <span className="sr-only">Gönder</span>
+                        </Button>
+                      </div>
+                    </CardFooter>
+                  </>
+                )}
               </Card>
 
               <div className="mt-4">
