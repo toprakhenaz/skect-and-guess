@@ -88,6 +88,7 @@ export default function RoomPage() {
   const timerRef = useRef<NodeJS.Timeout | null>(null)
   const guessTimerRef = useRef<NodeJS.Timeout | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const initializedRef = useRef(false)
 
   // Mesajları otomatik kaydır
   useEffect(() => {
@@ -96,78 +97,16 @@ export default function RoomPage() {
     }
   }, [messages])
 
-  // Odaya katıl
+  // Odaya katıl ve verileri yükle - Sadece bir kez çalışacak şekilde
   useEffect(() => {
+    // Çift başlatmayı önle
+    if (initializedRef.current) return
+    initializedRef.current = true
+
     const initializeRoom = async () => {
       try {
-        // Mevcut oyuncuyu ekle
-        const currentPlayer = {
-          player_id: playerId,
-          player_name: playerName,
-          is_host: isHost,
-          is_drawing: false,
-          score: 0,
-          connected: true,
-        }
-
-        setPlayers([currentPlayer])
-
         // Odaya katıl ve presence durumunu ayarla
         roomChannelRef.current = joinRoom(roomId, playerId, playerName, isHost)
-
-        // Çizim güncellemelerini dinle
-        subscribeToDrawing(roomId, (drawingData) => {
-          setCurrentDrawing(drawingData)
-
-          // Çizim güncellendiğinde ve tahmin etme durumundaysak, tahmin sekmesine geç
-          if (gameState === "guessing" && !isDrawing) {
-            setActiveTab("guess")
-            // Tahmin süresi başlat
-            startGuessTimer()
-          }
-        })
-
-        // Sohbet mesajlarını dinle
-        subscribeToChat(roomId, (newMessage) => {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: newMessage.id,
-              playerId: newMessage.playerId,
-              playerName: newMessage.playerName,
-              message: newMessage.message,
-              isCorrectGuess: newMessage.isCorrectGuess || false,
-              timestamp: newMessage.timestamp,
-            },
-          ])
-        })
-
-        // Oyun durumu değişikliklerini dinle
-        subscribeToGameState(roomId, (roomData) => {
-          if (roomData.status === "playing") {
-            setGameState(isDrawing ? "playing" : "guessing")
-            setRoundNumber(roomData.current_round)
-            setTotalRounds(roomData.total_rounds)
-
-            // Çizen oyuncu için kelimeyi ayarla
-            if (isDrawing && roomData.current_word) {
-              setCurrentWord(roomData.current_word)
-            }
-          } else if (roomData.status === "finished") {
-            setGameState("gameEnd")
-          }
-        })
-
-        // Oyuncu değişikliklerini dinle
-        subscribeToPlayerChanges(roomId, (updatedPlayers) => {
-          setPlayers(updatedPlayers)
-
-          // Çizen oyuncuyu kontrol et
-          const drawingPlayer = updatedPlayers.find((p) => p.is_drawing)
-          if (drawingPlayer) {
-            setIsDrawing(drawingPlayer.player_id === playerId)
-          }
-        })
 
         // Odadaki mevcut oyuncuları getir
         const { data: roomPlayers } = await supabase
@@ -178,6 +117,12 @@ export default function RoomPage() {
 
         if (roomPlayers) {
           setPlayers(roomPlayers)
+
+          // Çizen oyuncuyu kontrol et
+          const drawingPlayer = roomPlayers.find((p) => p.is_drawing)
+          if (drawingPlayer) {
+            setIsDrawing(drawingPlayer.player_id === playerId)
+          }
         }
 
         // Oda bilgilerini getir
@@ -185,15 +130,11 @@ export default function RoomPage() {
 
         if (roomDetails) {
           if (roomDetails.status === "playing") {
-            // Çizen oyuncuyu kontrol et
-            const drawingPlayer = roomPlayers?.find((p) => p.is_drawing)
-            setIsDrawing(drawingPlayer?.player_id === playerId)
-
-            setGameState(drawingPlayer?.player_id === playerId ? "playing" : "guessing")
+            setGameState(isDrawing ? "playing" : "guessing")
             setRoundNumber(roomDetails.current_round)
             setTotalRounds(roomDetails.total_rounds)
 
-            if (drawingPlayer?.player_id === playerId && roomDetails.current_word) {
+            if (isDrawing && roomDetails.current_word) {
               setCurrentWord(roomDetails.current_word)
             }
           }
@@ -221,17 +162,24 @@ export default function RoomPage() {
         }
 
         // Son çizimi getir
-        const { data: latestDrawing } = await supabase
-          .from("drawings")
-          .select("*")
-          .eq("room_code", roomId)
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .single()
+        try {
+          const { data: latestDrawing } = await supabase
+            .from("drawings")
+            .select("*")
+            .eq("room_code", roomId)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .single()
 
-        if (latestDrawing) {
-          setCurrentDrawing(latestDrawing.drawing_data)
+          if (latestDrawing) {
+            setCurrentDrawing(latestDrawing.drawing_data)
+          }
+        } catch (error) {
+          console.log("Henüz çizim yok")
         }
+
+        // Realtime abonelikleri başlat
+        setupRealtimeSubscriptions()
 
         setIsLoading(false)
       } catch (error) {
@@ -261,6 +209,63 @@ export default function RoomPage() {
       }
     }
   }, [roomId, playerId, playerName, isHost, router, toast])
+
+  // Realtime abonelikleri ayrı bir fonksiyonda kur
+  const setupRealtimeSubscriptions = () => {
+    // Çizim güncellemelerini dinle
+    subscribeToDrawing(roomId, (drawingData) => {
+      setCurrentDrawing(drawingData)
+
+      // Çizim güncellendiğinde ve tahmin etme durumundaysak, tahmin sekmesine geç
+      if (gameState === "guessing" && !isDrawing) {
+        setActiveTab("guess")
+        // Tahmin süresi başlat
+        startGuessTimer()
+      }
+    })
+
+    // Sohbet mesajlarını dinle
+    subscribeToChat(roomId, (newMessage) => {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: newMessage.id,
+          playerId: newMessage.playerId,
+          playerName: newMessage.playerName,
+          message: newMessage.message,
+          isCorrectGuess: newMessage.isCorrectGuess || false,
+          timestamp: newMessage.timestamp,
+        },
+      ])
+    })
+
+    // Oyun durumu değişikliklerini dinle
+    subscribeToGameState(roomId, (roomData) => {
+      if (roomData.status === "playing") {
+        setGameState(isDrawing ? "playing" : "guessing")
+        setRoundNumber(roomData.current_round)
+        setTotalRounds(roomData.total_rounds)
+
+        // Çizen oyuncu için kelimeyi ayarla
+        if (isDrawing && roomData.current_word) {
+          setCurrentWord(roomData.current_word)
+        }
+      } else if (roomData.status === "finished") {
+        setGameState("gameEnd")
+      }
+    })
+
+    // Oyuncu değişikliklerini dinle
+    subscribeToPlayerChanges(roomId, (updatedPlayers) => {
+      setPlayers(updatedPlayers)
+
+      // Çizen oyuncuyu kontrol et
+      const drawingPlayer = updatedPlayers.find((p) => p.is_drawing)
+      if (drawingPlayer) {
+        setIsDrawing(drawingPlayer.player_id === playerId)
+      }
+    })
+  }
 
   // Süre sayacı
   useEffect(() => {

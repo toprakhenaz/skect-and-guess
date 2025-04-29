@@ -1,16 +1,11 @@
 import type { RealtimeChannel } from "@supabase/supabase-js"
 import { supabase } from "./supabase"
 
-// Kanal türleri
-type ChannelType = "room" | "drawing" | "chat"
-
 // Kanal önbelleği
 const channelCache: Record<string, RealtimeChannel> = {}
 
 // Kanal oluştur veya mevcut kanalı getir
-export function getChannel(type: ChannelType, roomCode: string): RealtimeChannel {
-  const channelId = `${type}:${roomCode}`
-
+export function getChannel(channelId: string): RealtimeChannel {
   if (!channelCache[channelId]) {
     channelCache[channelId] = supabase.channel(channelId)
   }
@@ -18,11 +13,10 @@ export function getChannel(type: ChannelType, roomCode: string): RealtimeChannel
   return channelCache[channelId]
 }
 
-// Odaya katıl ve presence durumunu ayarla
+// Odaya katıl
 export function joinRoom(roomCode: string, playerId: string, playerName: string, isHost = false) {
-  const roomChannel = getChannel("room", roomCode)
+  const roomChannel = getChannel(`room:${roomCode}`)
 
-  // Presence ile oyuncu durumunu paylaş
   roomChannel
     .on("presence", { event: "sync" }, () => {
       const state = roomChannel.presenceState()
@@ -36,7 +30,6 @@ export function joinRoom(roomCode: string, playerId: string, playerName: string,
     })
     .subscribe(async (status) => {
       if (status === "SUBSCRIBED") {
-        // Presence durumunu ayarla
         await roomChannel.track({
           playerId,
           playerName,
@@ -53,16 +46,15 @@ export function joinRoom(roomCode: string, playerId: string, playerName: string,
 // Odadan ayrıl
 export function leaveRoom(roomCode: string) {
   const channelId = `room:${roomCode}`
-
   if (channelCache[channelId]) {
     channelCache[channelId].unsubscribe()
     delete channelCache[channelId]
   }
 }
 
-// Çizim kanalına abone ol
+// Çizim güncellemelerini dinle
 export function subscribeToDrawing(roomCode: string, onDrawingUpdate: (drawingData: string) => void) {
-  const drawingChannel = getChannel("drawing", roomCode)
+  const drawingChannel = getChannel(`drawing:${roomCode}`)
 
   drawingChannel
     .on("broadcast", { event: "drawing" }, (payload) => {
@@ -75,7 +67,7 @@ export function subscribeToDrawing(roomCode: string, onDrawingUpdate: (drawingDa
 
 // Çizim güncelleme gönder
 export function sendDrawingUpdate(roomCode: string, drawingData: string) {
-  const drawingChannel = getChannel("drawing", roomCode)
+  const drawingChannel = getChannel(`drawing:${roomCode}`)
 
   drawingChannel.send({
     type: "broadcast",
@@ -84,9 +76,9 @@ export function sendDrawingUpdate(roomCode: string, drawingData: string) {
   })
 }
 
-// Sohbet kanalına abone ol
+// Sohbet mesajlarını dinle
 export function subscribeToChat(roomCode: string, onNewMessage: (message: any) => void) {
-  const chatChannel = getChannel("chat", roomCode)
+  const chatChannel = getChannel(`chat:${roomCode}`)
 
   chatChannel
     .on("broadcast", { event: "message" }, (payload) => {
@@ -105,7 +97,7 @@ export function sendMessage(
   message: string,
   isCorrectGuess = false,
 ) {
-  const chatChannel = getChannel("chat", roomCode)
+  const chatChannel = getChannel(`chat:${roomCode}`)
 
   chatChannel.send({
     type: "broadcast",
@@ -118,11 +110,12 @@ export function sendMessage(
   })
 }
 
-// Oyun durumu kanalına abone ol
+// Oyun durumu değişikliklerini dinle
 export function subscribeToGameState(roomCode: string, onGameStateUpdate: (gameState: any) => void) {
-  // Veritabanı değişikliklerini dinle
-  const subscription = supabase
-    .channel(`room-state-${roomCode}`)
+  // Tek bir kanal kullan
+  const gameStateChannel = getChannel(`gameState:${roomCode}`)
+
+  gameStateChannel
     .on(
       "postgres_changes",
       {
@@ -137,14 +130,16 @@ export function subscribeToGameState(roomCode: string, onGameStateUpdate: (gameS
     )
     .subscribe()
 
-  return subscription
+  return gameStateChannel
 }
 
-// Oyuncu durumu değişikliklerini dinle
+// Oyuncu değişikliklerini dinle - Optimize edilmiş
 export function subscribeToPlayerChanges(roomCode: string, onPlayerChanges: (players: any[]) => void) {
-  // Veritabanı değişikliklerini dinle
-  const subscription = supabase
-    .channel(`players-${roomCode}`)
+  // Tek bir kanal kullan
+  const playersChannel = getChannel(`players:${roomCode}`)
+
+  // Oyuncu değişikliklerini dinle ama her değişiklikte tüm oyuncuları çekme
+  playersChannel
     .on(
       "postgres_changes",
       {
@@ -153,8 +148,8 @@ export function subscribeToPlayerChanges(roomCode: string, onPlayerChanges: (pla
         table: "players",
         filter: `room_code=eq.${roomCode}`,
       },
-      async () => {
-        // Oyuncu değişikliği olduğunda tüm oyuncuları getir
+      async (payload) => {
+        // Değişiklik olduğunda tüm oyuncuları getir
         const { data } = await supabase
           .from("players")
           .select("*")
@@ -168,7 +163,7 @@ export function subscribeToPlayerChanges(roomCode: string, onPlayerChanges: (pla
     )
     .subscribe()
 
-  return subscription
+  return playersChannel
 }
 
 // Tüm kanalları temizle
