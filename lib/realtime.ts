@@ -103,7 +103,6 @@ export function sendMessage(
   playerId: string,
   playerName: string,
   message: string,
-  isPendingGuess = false,
   isCorrectGuess = false,
 ) {
   const chatChannel = getChannel("chat", roomCode)
@@ -114,7 +113,6 @@ export function sendMessage(
     playerId,
     playerName,
     message,
-    isPendingGuess,
     isCorrectGuess,
     timestamp: new Date().toISOString(),
   })
