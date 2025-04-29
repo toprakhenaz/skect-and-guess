@@ -98,7 +98,14 @@ export function subscribeToChat(roomCode: string, onNewMessage: (message: any) =
 }
 
 // Mesaj gönder
-export function sendMessage(roomCode: string, playerId: string, playerName: string, message: string) {
+export function sendMessage(
+  roomCode: string,
+  playerId: string,
+  playerName: string,
+  message: string,
+  isPendingGuess = false,
+  isCorrectGuess = false,
+) {
   const chatChannel = getChannel("chat", roomCode)
 
   chatChannel.send({
@@ -107,6 +114,8 @@ export function sendMessage(roomCode: string, playerId: string, playerName: stri
     playerId,
     playerName,
     message,
+    isPendingGuess,
+    isCorrectGuess,
     timestamp: new Date().toISOString(),
   })
 }

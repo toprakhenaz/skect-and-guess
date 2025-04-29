@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { CanvasDraw } from "@/components/canvas-draw"
-import { ArrowLeft, Clock, Send, Users, Loader2 } from "lucide-react"
+import { ArrowLeft, Clock, Send, Users, Loader2, Check, X } from "lucide-react"
 import Link from "next/link"
 import { useToast } from "@/components/ui/use-toast"
 import { supabase } from "@/lib/supabase"
@@ -38,11 +38,13 @@ type Player = {
 
 // Mesaj tipi
 type Message = {
+  id?: number
   playerId: string
   playerName: string
   message: string
   isCorrectGuess: boolean
   timestamp: string
+  isPendingGuess?: boolean
 }
 
 export default function RoomPage() {
@@ -67,9 +69,18 @@ export default function RoomPage() {
   const [totalRounds, setTotalRounds] = useState(3)
   const [isLoading, setIsLoading] = useState(true)
   const [isDrawing, setIsDrawing] = useState(false)
+  const [pendingGuesses, setPendingGuesses] = useState<Message[]>([])
 
   const roomChannelRef = useRef<RealtimeChannel | null>(null)
   const timerRef = useRef<NodeJS.Timeout | null>(null)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  // Mesajları otomatik kaydır
+  useEffect(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: "smooth" })
+    }
+  }, [messages])
 
   // Odaya katıl
   useEffect(() => {
@@ -97,16 +108,34 @@ export default function RoomPage() {
 
         // Sohbet mesajlarını dinle
         subscribeToChat(roomId, (newMessage) => {
-          setMessages((prev) => [
-            ...prev,
-            {
-              playerId: newMessage.playerId,
-              playerName: newMessage.playerName,
-              message: newMessage.message,
-              isCorrectGuess: newMessage.isCorrectGuess || false,
-              timestamp: newMessage.timestamp,
-            },
-          ])
+          // Eğer bu bir tahmin değilse normal mesaj olarak ekle
+          if (!newMessage.isPendingGuess) {
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: newMessage.id,
+                playerId: newMessage.playerId,
+                playerName: newMessage.playerName,
+                message: newMessage.message,
+                isCorrectGuess: newMessage.isCorrectGuess || false,
+                timestamp: newMessage.timestamp,
+              },
+            ])
+          } else if (isDrawing) {
+            // Eğer çizen oyuncuysak ve bu bir tahminse, bekleyen tahminlere ekle
+            setPendingGuesses((prev) => [
+              ...prev,
+              {
+                id: newMessage.id,
+                playerId: newMessage.playerId,
+                playerName: newMessage.playerName,
+                message: newMessage.message,
+                isCorrectGuess: false,
+                timestamp: newMessage.timestamp,
+                isPendingGuess: true,
+              },
+            ])
+          }
         })
 
         // Oyun durumu değişikliklerini dinle
@@ -177,6 +206,7 @@ export default function RoomPage() {
         if (roomMessages) {
           setMessages(
             roomMessages.map((msg) => ({
+              id: msg.id,
               playerId: msg.player_id,
               playerName: msg.player_name,
               message: msg.message,
@@ -336,52 +366,106 @@ export default function RoomPage() {
     if (!message.trim()) return
 
     try {
-      // Mesajı veritabanına kaydet
-      await supabase.from("messages").insert({
-        room_code: roomId,
-        player_id: playerId,
-        player_name: playerName,
-        message: message,
-        is_correct_guess: false,
-      })
-
-      // Realtime ile mesajı gönder
-      sendMessage(roomId, playerId, playerName, message)
-
-      // Mesaj kutusunu temizle
-      setMessage("")
-
-      // Doğru tahmin kontrolü
-      if (
+      // Eğer tahmin ediyorsak ve kelimeye benzer bir şey yazıyorsak, tahmin olarak işaretle
+      const isMakingGuess =
         gameState === "guessing" &&
         currentWord &&
-        message.toLowerCase().trim() === currentWord.toLowerCase().trim()
-      ) {
-        // Doğru tahmin
-        await supabase.from("messages").insert({
+        !isDrawing &&
+        message.toLowerCase().trim().includes(currentWord.toLowerCase().trim())
+
+      // Mesajı veritabanına kaydet
+      const { data: newMessage, error } = await supabase
+        .from("messages")
+        .insert({
           room_code: roomId,
           player_id: playerId,
           player_name: playerName,
-          message: "*** DOĞRU TAHMİN ***",
-          is_correct_guess: true,
+          message: message,
+          is_correct_guess: false,
         })
+        .select()
+        .single()
 
+      if (error) {
+        throw error
+      }
+
+      // Eğer tahmin yapıyorsa, çizen oyuncuya özel mesaj gönder
+      if (isMakingGuess) {
+        // Realtime ile tahmin mesajını gönder
+        sendMessage(roomId, playerId, playerName, message, true)
+      } else {
+        // Normal sohbet mesajı
+        sendMessage(roomId, playerId, playerName, message)
+
+        // Kendi mesajımızı hemen göster
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: newMessage.id,
+            playerId: playerId,
+            playerName: playerName,
+            message: message,
+            isCorrectGuess: false,
+            timestamp: new Date().toISOString(),
+          },
+        ])
+      }
+
+      // Mesaj kutusunu temizle
+      setMessage("")
+    } catch (error) {
+      console.error("Mesaj gönderme hatası:", error)
+      toast({
+        title: "Hata",
+        description: "Mesaj gönderilemedi. Lütfen tekrar deneyin.",
+        variant: "destructive",
+      })
+    }
+  }
+
+  // Tahmini değerlendir (doğru/yanlış)
+  const handleGuessEvaluation = async (guess: Message, isCorrect: boolean) => {
+    try {
+      // Tahmini değerlendir ve veritabanını güncelle
+      await supabase.from("messages").update({ is_correct_guess: isCorrect }).eq("id", guess.id)
+
+      // Mesajı herkese gönder
+      const updatedMessage = {
+        ...guess,
+        isCorrectGuess: isCorrect,
+        isPendingGuess: false,
+      }
+
+      sendMessage(
+        roomId,
+        guess.playerId,
+        guess.playerName,
+        isCorrect ? `*** DOĞRU TAHMİN: ${guess.message} ***` : guess.message,
+        false,
+        isCorrect,
+      )
+
+      // Bekleyen tahminlerden kaldır
+      setPendingGuesses((prev) => prev.filter((g) => g.id !== guess.id))
+
+      if (isCorrect) {
         // Tahmin eden oyuncuya puan ekle
-        await supabase
-          .from("players")
-          .update({ score: players.find((p) => p.player_id === playerId)?.score + 10 || 10 })
-          .eq("room_code", roomId)
-          .eq("player_id", playerId)
-
-        // Çizen oyuncuya puan ekle
-        const drawingPlayer = players.find((p) => p.is_drawing)
-        if (drawingPlayer) {
+        const guessingPlayer = players.find((p) => p.player_id === guess.playerId)
+        if (guessingPlayer) {
           await supabase
             .from("players")
-            .update({ score: drawingPlayer.score + 5 })
+            .update({ score: guessingPlayer.score + 10 })
             .eq("room_code", roomId)
-            .eq("player_id", drawingPlayer.player_id)
+            .eq("player_id", guess.playerId)
         }
+
+        // Çizen oyuncuya puan ekle
+        await supabase
+          .from("players")
+          .update({ score: players.find((p) => p.is_drawing)?.score + 5 || 5 })
+          .eq("room_code", roomId)
+          .eq("player_id", players.find((p) => p.is_drawing)?.player_id || "")
 
         // Tur sonu işlemleri
         setTimeout(() => {
@@ -389,16 +473,18 @@ export default function RoomPage() {
         }, 5000)
       }
     } catch (error) {
-      console.error("Mesaj gönderme hatası:", error)
+      console.error("Tahmin değerlendirme hatası:", error)
+      toast({
+        title: "Hata",
+        description: "Tahmin değerlendirilemedi. Lütfen tekrar deneyin.",
+        variant: "destructive",
+      })
     }
   }
 
   // Çizimi kaydet
   const saveDrawing = (dataUrl: string) => {
     setCurrentDrawing(dataUrl)
-
-    // Çizimi diğer oyunculara gönder
-    sendDrawingUpdate(roomId, dataUrl)
   }
 
   // Çizimi tamamla
@@ -414,10 +500,25 @@ export default function RoomPage() {
         word: currentWord,
       })
 
+      // Çizimi diğer oyunculara gönder
+      sendDrawingUpdate(roomId, currentDrawing)
+
+      // Bekleyen tüm tahminleri reddet
+      for (const guess of pendingGuesses) {
+        await handleGuessEvaluation(guess, false)
+      }
+
       // Tur sonu işlemleri
-      handleRoundEnd()
+      setTimeout(() => {
+        handleRoundEnd()
+      }, 3000)
     } catch (error) {
       console.error("Çizim kaydetme hatası:", error)
+      toast({
+        title: "Hata",
+        description: "Çizim kaydedilemedi. Lütfen tekrar deneyin.",
+        variant: "destructive",
+      })
     }
   }
 
@@ -503,6 +604,30 @@ export default function RoomPage() {
       }
     } catch (error) {
       console.error("Tur sonu işleme hatası:", error)
+      toast({
+        title: "Hata",
+        description: "Tur sonu işlenemedi. Lütfen tekrar deneyin.",
+        variant: "destructive",
+      })
+    }
+  }
+
+  // Oyunu bitir (oda sahibi için)
+  const endGame = async () => {
+    if (!isHost) return
+
+    try {
+      // Oyunu bitir
+      await supabase.from("rooms").update({ status: "finished" }).eq("room_code", roomId)
+
+      setGameState("gameEnd")
+    } catch (error) {
+      console.error("Oyun bitirme hatası:", error)
+      toast({
+        title: "Hata",
+        description: "Oyun bitirilemedi. Lütfen tekrar deneyin.",
+        variant: "destructive",
+      })
     }
   }
 
@@ -569,8 +694,15 @@ export default function RoomPage() {
                   <Clock className="h-4 w-4" />
                   <span>{timeLeft} saniye</span>
                 </div>
-                <div>
-                  Tur: {roundNumber}/{totalRounds}
+                <div className="flex items-center space-x-4">
+                  <div>
+                    Tur: {roundNumber}/{totalRounds}
+                  </div>
+                  {isHost && gameState !== "gameEnd" && (
+                    <Button variant="outline" size="sm" onClick={endGame}>
+                      Oyunu Bitir
+                    </Button>
+                  )}
                 </div>
               </div>
 
@@ -587,6 +719,40 @@ export default function RoomPage() {
                         Çizimi Tamamla
                       </Button>
                     </div>
+
+                    {/* Bekleyen tahminler */}
+                    {pendingGuesses.length > 0 && (
+                      <div className="mt-4 p-4 border-t">
+                        <h3 className="font-medium mb-2">Bekleyen Tahminler:</h3>
+                        <div className="space-y-2">
+                          {pendingGuesses.map((guess, index) => (
+                            <div key={index} className="flex items-center justify-between bg-muted p-2 rounded-lg">
+                              <div>
+                                <span className="font-medium">{guess.playerName}:</span> {guess.message}
+                              </div>
+                              <div className="flex space-x-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="bg-green-100 hover:bg-green-200"
+                                  onClick={() => handleGuessEvaluation(guess, true)}
+                                >
+                                  <Check className="h-4 w-4 mr-1" /> Doğru
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="bg-red-100 hover:bg-red-200"
+                                  onClick={() => handleGuessEvaluation(guess, false)}
+                                >
+                                  <X className="h-4 w-4 mr-1" /> Yanlış
+                                </Button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </>
                 ) : (
                   <>
@@ -619,25 +785,27 @@ export default function RoomPage() {
                     {messages.map((msg, index) => (
                       <div
                         key={index}
-                        className={`rounded-lg p-2 ${msg.isCorrectGuess ? "bg-green-100 dark:bg-green-900" : "bg-muted"}`}
+                        className={`rounded-lg p-2 ${
+                          msg.isCorrectGuess ? "bg-green-100 dark:bg-green-900" : "bg-muted"
+                        }`}
                       >
                         <div className="font-medium">{msg.playerName}</div>
                         <div>{msg.message}</div>
                       </div>
                     ))}
                     {messages.length === 0 && <p className="text-sm text-muted-foreground">Henüz mesaj yok</p>}
+                    <div ref={messagesEndRef} />
                   </div>
                 </CardContent>
                 <CardFooter className="p-4">
                   <div className="flex w-full items-center space-x-2">
                     <Input
-                      placeholder="Tahmininizi yazın..."
+                      placeholder={isDrawing ? "Sohbet mesajı yazın..." : "Tahmininizi yazın..."}
                       value={message}
                       onChange={(e) => setMessage(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
-                      disabled={isDrawing || gameState !== "guessing"}
                     />
-                    <Button size="icon" onClick={handleSendMessage} disabled={isDrawing || gameState !== "guessing"}>
+                    <Button size="icon" onClick={handleSendMessage}>
                       <Send className="h-4 w-4" />
                       <span className="sr-only">Gönder</span>
                     </Button>
