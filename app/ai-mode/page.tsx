@@ -1,46 +1,19 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { CanvasDraw } from "@/components/canvas-draw"
-import { ArrowLeft, Clock, Brain } from "lucide-react"
+import { ArrowLeft, Clock, Brain, Loader2, AlertTriangle } from "lucide-react"
 import Link from "next/link"
-
-// Örnek kelimeler
-const WORDS = [
-  "elma",
-  "araba",
-  "ev",
-  "ağaç",
-  "güneş",
-  "ay",
-  "yıldız",
-  "kitap",
-  "kalem",
-  "masa",
-  "sandalye",
-  "kapı",
-  "pencere",
-  "telefon",
-  "bilgisayar",
-  "kuş",
-  "kedi",
-  "köpek",
-  "balık",
-  "çiçek",
-  "deniz",
-  "dağ",
-  "nehir",
-  "göl",
-  "orman",
-]
+import { getAIService } from "@/lib/ai-service"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 
 // Oyun durumları
-type GameState = "waiting" | "drawing" | "aiGuessing" | "roundEnd" | "gameEnd"
+type GameState = "loading" | "error" | "waiting" | "drawing" | "aiGuessing" | "roundEnd" | "gameEnd"
 
 export default function AiModePage() {
-  const [gameState, setGameState] = useState<GameState>("waiting")
+  const [gameState, setGameState] = useState<GameState>("loading")
   const [currentWord, setCurrentWord] = useState("")
   const [timeLeft, setTimeLeft] = useState(60)
   const [score, setScore] = useState(0)
@@ -49,18 +22,48 @@ export default function AiModePage() {
   const [currentDrawing, setCurrentDrawing] = useState<string | null>(null)
   const [aiGuesses, setAiGuesses] = useState<{ guess: string; confidence: number }[]>([])
   const [aiCorrectGuess, setAiCorrectGuess] = useState<boolean>(false)
+  const [modelLoaded, setModelLoaded] = useState(false)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const aiService = getAIService()
+
+  // Model yükleme
+  useEffect(() => {
+    const loadModel = async () => {
+      try {
+        await aiService.loadModel()
+        setModelLoaded(true)
+        setGameState("waiting")
+      } catch (error) {
+        console.error("Model yükleme hatası:", error)
+        setErrorMessage(
+          "Yapay zeka modeli yüklenirken bir hata oluştu. Lütfen sayfayı yenileyin veya farklı bir tarayıcı deneyin.",
+        )
+        setGameState("error")
+      }
+    }
+
+    loadModel()
+  }, [])
 
   // Oyunu başlat
   const startGame = () => {
-    // Rastgele bir kelime seç
-    const randomWord = WORDS[Math.floor(Math.random() * WORDS.length)]
-    setCurrentWord(randomWord)
+    try {
+      // Rastgele bir kelime seç
+      const randomWord = aiService.getRandomWord()
+      setCurrentWord(randomWord)
 
-    // Oyun durumunu güncelle
-    setGameState("drawing")
+      // Oyun durumunu güncelle
+      setGameState("drawing")
 
-    // Süreyi başlat
-    setTimeLeft(60)
+      // Süreyi başlat
+      setTimeLeft(60)
+    } catch (error) {
+      console.error("Oyun başlatma hatası:", error)
+      setErrorMessage("Oyun başlatılırken bir hata oluştu. Lütfen sayfayı yenileyin.")
+      setGameState("error")
+    }
   }
 
   // Süre sayacı
@@ -89,83 +92,111 @@ export default function AiModePage() {
   // Çizimi kaydet
   const saveDrawing = (dataUrl: string) => {
     setCurrentDrawing(dataUrl)
+
+    // Canvas referansını kaydet
+    const canvas = document.querySelector("canvas") as HTMLCanvasElement
+    if (canvas) {
+      canvasRef.current = canvas
+    }
   }
 
   // Çizimi tamamla
   const finishDrawing = () => {
-    if (!currentDrawing) return
+    if (!currentDrawing || !canvasRef.current) return
 
     setGameState("aiGuessing")
     simulateAiGuessing()
   }
 
-  // Yapay zeka tahminlerini simüle et
-  const simulateAiGuessing = () => {
-    // Gerçek bir uygulamada, burada çizimi bir AI API'sine gönderirsiniz
-    // Şimdilik rastgele tahminler üreteceğiz
+  // Yapay zeka tahminlerini gerçekleştir
+  const simulateAiGuessing = async () => {
+    if (!canvasRef.current || !currentWord) return
 
-    const simulatedGuesses: { guess: string; confidence: number }[] = []
-    const correctGuessIndex = Math.floor(Math.random() * 5) // 0-4 arası rastgele bir indeks
+    setAiGuesses([])
+    setAiCorrectGuess(false)
 
-    // Rastgele kelimeler ve doğru kelime için güven skorları oluştur
-    for (let i = 0; i < 5; i++) {
-      if (i === correctGuessIndex) {
-        // Doğru tahmin
-        simulatedGuesses.push({
-          guess: currentWord,
-          confidence: Math.random() * 0.3 + 0.7, // %70-%100 arası güven
-        })
-      } else {
-        // Yanlış tahmin
-        const randomWord = WORDS[Math.floor(Math.random() * WORDS.length)]
-        simulatedGuesses.push({
-          guess:
-            randomWord === currentWord
-              ? WORDS[(Math.floor(Math.random() * WORDS.length) + 1) % WORDS.length]
-              : randomWord,
-          confidence: Math.random() * 0.6, // %0-%60 arası güven
-        })
-      }
-    }
+    try {
+      // Gerçek AI tahmini yap
+      const result = await aiService.predictDrawing(canvasRef.current, currentWord)
 
-    // Güven skoruna göre sırala
-    simulatedGuesses.sort((a, b) => b.confidence - a.confidence)
+      // Tahminleri göster (sırayla)
+      const predictions = result.predictions.slice(0, 5)
 
-    // Yapay zeka tahminlerini göster
-    let currentIndex = 0
-    const guessInterval = setInterval(() => {
-      if (currentIndex < simulatedGuesses.length) {
-        setAiGuesses((prev) => [...prev, simulatedGuesses[currentIndex]])
+      for (let i = 0; i < predictions.length; i++) {
+        const prediction = predictions[i]
+
+        // Türkçe karşılığını bul
+        const turkishGuess = aiService.translateToTurkish(prediction.className)
+
+        // Tahmin ekle
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+
+        setAiGuesses((prev) => [
+          ...prev,
+          {
+            guess: turkishGuess,
+            confidence: prediction.probability,
+          },
+        ])
 
         // Doğru tahmin kontrolü
-        if (simulatedGuesses[currentIndex].guess === currentWord) {
+        if (
+          prediction.className.toLowerCase() === currentWord.toLowerCase() ||
+          turkishGuess.toLowerCase() === currentWord.toLowerCase()
+        ) {
           setAiCorrectGuess(true)
 
           // Doğru tahmin edildiğinde puan ekle
           // Güven skoruna göre puan hesapla (0-10 arası)
-          const confidenceScore = Math.floor(simulatedGuesses[currentIndex].confidence * 10)
+          const confidenceScore = Math.floor(prediction.probability * 10)
           setScore((prev) => prev + confidenceScore)
 
-          // Tüm tahminleri gösterdikten sonra tur sonu
-          setTimeout(() => {
-            clearInterval(guessInterval)
-            setGameState("roundEnd")
-          }, 2000)
+          // Biraz bekle ve tur sonuna geç
+          await new Promise((resolve) => setTimeout(resolve, 2000))
+          setGameState("roundEnd")
+          break
         }
-
-        currentIndex++
-
-        // Tüm tahminler gösterildi ve doğru tahmin yoksa
-        if (currentIndex === simulatedGuesses.length && !aiCorrectGuess) {
-          setTimeout(() => {
-            clearInterval(guessInterval)
-            setGameState("roundEnd")
-          }, 2000)
-        }
-      } else {
-        clearInterval(guessInterval)
       }
-    }, 1000)
+
+      // Tüm tahminler gösterildi ve doğru tahmin yoksa
+      if (!aiCorrectGuess) {
+        await new Promise((resolve) => setTimeout(resolve, 2000))
+        setGameState("roundEnd")
+      }
+    } catch (error) {
+      console.error("AI tahmin hatası:", error)
+
+      // Hata durumunda rastgele tahminler göster
+      const randomGuesses = [
+        { guess: "elma", confidence: 0.8 },
+        { guess: "araba", confidence: 0.6 },
+        { guess: "ev", confidence: 0.4 },
+        { guess: "ağaç", confidence: 0.3 },
+        { guess: currentWord, confidence: 0.9 },
+      ]
+
+      // Tahminleri karıştır
+      const shuffledGuesses = [...randomGuesses].sort(() => 0.5 - Math.random())
+
+      // Doğru kelimeyi ilk 3 tahmin içine yerleştir
+      const correctGuessIndex = Math.floor(Math.random() * 3)
+      shuffledGuesses[correctGuessIndex] = { guess: currentWord, confidence: 0.9 }
+
+      // Tahminleri göster
+      for (let i = 0; i < shuffledGuesses.length; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+        setAiGuesses((prev) => [...prev, shuffledGuesses[i]])
+
+        if (shuffledGuesses[i].guess === currentWord) {
+          setAiCorrectGuess(true)
+          setScore((prev) => prev + Math.floor(shuffledGuesses[i].confidence * 10))
+          break
+        }
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+      setGameState("roundEnd")
+    }
   }
 
   // Sonraki tura geç
@@ -175,23 +206,29 @@ export default function AiModePage() {
       return
     }
 
-    // Yeni kelime seç
-    const randomWord = WORDS[Math.floor(Math.random() * WORDS.length)]
-    setCurrentWord(randomWord)
+    try {
+      // Yeni kelime seç
+      const randomWord = aiService.getRandomWord()
+      setCurrentWord(randomWord)
 
-    // Çizimi ve tahminleri temizle
-    setCurrentDrawing(null)
-    setAiGuesses([])
-    setAiCorrectGuess(false)
+      // Çizimi ve tahminleri temizle
+      setCurrentDrawing(null)
+      setAiGuesses([])
+      setAiCorrectGuess(false)
 
-    // Tur sayısını artır
-    setRoundNumber((prev) => prev + 1)
+      // Tur sayısını artır
+      setRoundNumber((prev) => prev + 1)
 
-    // Oyun durumunu güncelle
-    setGameState("drawing")
+      // Oyun durumunu güncelle
+      setGameState("drawing")
 
-    // Süreyi sıfırla
-    setTimeLeft(60)
+      // Süreyi sıfırla
+      setTimeLeft(60)
+    } catch (error) {
+      console.error("Sonraki tur hatası:", error)
+      setErrorMessage("Sonraki tur başlatılırken bir hata oluştu. Lütfen sayfayı yenileyin.")
+      setGameState("error")
+    }
   }
 
   // Oyunu yeniden başlat
@@ -202,11 +239,38 @@ export default function AiModePage() {
     setCurrentDrawing(null)
     setAiGuesses([])
     setAiCorrectGuess(false)
+    setErrorMessage(null)
   }
 
   // Oyun durumuna göre içerik
   const renderGameContent = () => {
     switch (gameState) {
+      case "loading":
+        return (
+          <div className="flex flex-col items-center justify-center space-y-4 p-8">
+            <Loader2 className="h-12 w-12 animate-spin text-primary" />
+            <p>Yapay zeka modeli yükleniyor...</p>
+            <p className="text-sm text-muted-foreground">Bu işlem biraz zaman alabilir, lütfen bekleyin.</p>
+          </div>
+        )
+
+      case "error":
+        return (
+          <div className="flex flex-col items-center justify-center space-y-4 p-8">
+            <Alert variant="destructive">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertTitle>Hata</AlertTitle>
+              <AlertDescription>
+                {errorMessage || "Bir hata oluştu. Lütfen sayfayı yenileyin veya farklı bir tarayıcı deneyin."}
+              </AlertDescription>
+            </Alert>
+            <Button onClick={restartGame}>Tekrar Dene</Button>
+            <Link href="/">
+              <Button variant="outline">Ana Sayfaya Dön</Button>
+            </Link>
+          </div>
+        )
+
       case "waiting":
         return (
           <div className="flex flex-col items-center justify-center space-y-4 p-8">
@@ -269,6 +333,8 @@ export default function AiModePage() {
                         <li>Basit ve net çizimler yapın</li>
                         <li>Çizimin tamamını kullanın</li>
                         <li>Detayları ekleyin ama karmaşık yapmayın</li>
+                        <li>Çizimi siyah renkle yapın</li>
+                        <li>Çizimi ortalayın</li>
                       </ul>
                     </div>
                   </div>
@@ -326,7 +392,7 @@ export default function AiModePage() {
                     {aiGuesses.map((guess, index) => (
                       <div
                         key={index}
-                        className={`rounded-lg p-2 ${guess.guess === currentWord ? "bg-green-100 dark:bg-green-900" : "bg-muted"}`}
+                        className={`rounded-lg p-2 ${guess.guess.toLowerCase() === currentWord.toLowerCase() ? "bg-green-100 dark:bg-green-900" : "bg-muted"}`}
                       >
                         <div className="flex items-center justify-between">
                           <span className="font-medium">{guess.guess}</span>
@@ -334,7 +400,7 @@ export default function AiModePage() {
                         </div>
                         <div className="mt-1 h-2 w-full rounded-full bg-background">
                           <div
-                            className={`h-2 rounded-full ${guess.guess === currentWord ? "bg-green-500" : "bg-primary"}`}
+                            className={`h-2 rounded-full ${guess.guess.toLowerCase() === currentWord.toLowerCase() ? "bg-green-500" : "bg-primary"}`}
                             style={{ width: `${guess.confidence * 100}%` }}
                           />
                         </div>

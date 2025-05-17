@@ -149,19 +149,16 @@ export function CanvasDraw({ onSave, width = 600, height = 400, readOnly = false
   // Touch event handlers
   const handleTouchStart = (e: React.TouchEvent) => {
     if (readOnly) return
-    e.preventDefault()
     startDrawing(e)
   }
 
   const handleTouchMove = (e: React.TouchEvent) => {
     if (readOnly) return
-    e.preventDefault()
     draw(e)
   }
 
   const handleTouchEnd = (e: React.TouchEvent) => {
     if (readOnly) return
-    e.preventDefault()
     stopDrawing()
   }
 
@@ -200,6 +197,7 @@ export function CanvasDraw({ onSave, width = 600, height = 400, readOnly = false
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
           className={`touch-none ${readOnly ? "cursor-default" : "cursor-crosshair"}`}
+          style={{ touchAction: "none" }}
         />
       </div>
 
